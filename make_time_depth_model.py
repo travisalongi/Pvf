@@ -162,7 +162,8 @@ fig99.gca().invert_yaxis()
 #%% Write data to text file
 
 #calc twtt
-time = 2 * arr_depths_unique / stacked_velocity *1e3
+time = 2 * np.diff(arr_depths_unique)[0] / stacked_velocity *1e3
+time = np.nan_to_num(time)
 travel_time = time.cumsum()
 
 # format data
