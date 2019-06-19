@@ -1,7 +1,7 @@
-
  # -*- coding: utf-8 -*-
 """
 read in las files -- develop time depth model
+this is spaghetti code
 author: talongi
 """
 
@@ -10,12 +10,13 @@ import lasio
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
 
 plt.rcParams["font.family"] = "serif"
 plt.close('all')
 
-#work_dir = '/auto/home/talongi/Pvf/FOIA_request_1/Beta_Exploratory_Logs/Beta_Exploratory_Logs'
-work_dir = 'D:\\Palos_Verdes_Fault_TA\\Beta_logs\\request_1'
+work_dir = '/auto/home/talongi/Pvf/FOIA_request_1/Beta_Exploratory_Logs/Beta_Exploratory_Logs'
+#work_dir = 'D:\\Palos_Verdes_Fault_TA\\Beta_logs\\request_1'
 
 os.chdir(work_dir)
 files = sorted(os.listdir(work_dir))
@@ -36,6 +37,7 @@ for j,i in enumerate(files):
     bulk_density = las_file['DENWS']
     gamma = las_file['GRWS']
     med_resistivity = las_file['MRESWS']
+    sp_potential = las_file['SPWS']
     
     # convert sonic log to velocity [m/s]
     delta_time = las_file['DTWS'] # in [us/ft] micro seconds / foot
@@ -48,7 +50,8 @@ for j,i in enumerate(files):
                    'dep' : depth,
                    'dens' : bulk_density,
                    'gamma' : gamma,
-                   'resis' : med_resistivity}
+                   'resis' : med_resistivity,
+                   'potent' : sp_potential}
     dic[las_file_name] = dic_in_loop        
     
     if make_plots == True: #plots each log separately
@@ -94,13 +97,15 @@ for i in dic.keys():
     r = dic[i]['resis']
     g = dic[i]['gamma']
     p = dic[i]['dens']
+    sp = dic[i]['potent']
     d_dist = window_size * np.diff(d).mean()
     
     # convert to dataframe to use pandas smoothing method
     v_df = pd.DataFrame(v)
     r_df = pd.DataFrame(r)
     g_df = pd.DataFrame(g)
-    p_df = pd.DataFrame(p)    
+    p_df = pd.DataFrame(p)   
+    sp_df = pd.DataFrame(sp)
     
     
     # rolling smoothing window applying median filtering
@@ -122,53 +127,58 @@ for i in dic.keys():
                             win_type = 'hamming',
                             center = True).mean()
     
+    sp_smooth = sp_df.rolling(window = window_size,
+                              min_periods = int(window_size/2),
+                              win_type = 'hamming',
+                              center = True).mean()
+    
     #add smooth data to dictionary
     dic[i]['vel_smooth'] = v_smooth.values 
     dic[i]['res_smooth'] = r_smooth.values
     dic[i]['gam_smooth'] = g_smooth.values
     dic[i]['den_smooth'] = p_smooth.values
+    dic[i]['sp_smooth'] = sp_smooth.values
 
+    if make_plots == True:
+        fig99 = plt.figure(99, figsize = (6,16))
+        al = 0.5
+        lw = 1.5
+        if well_id == 296:
+            c = 'seagreen'
+            print(well_id, c)    
+            plt.plot(v_smooth,d,    
+    #                 color = c,
+                     alpha = al,
+                     linewidth = lw,
+                     label = str(i))
     
-    fig99 = plt.figure(99, figsize = (6,16))
-    al = 0.5
-    lw = 1.5
-    if well_id == 296:
-        c = 'seagreen'
-        print(well_id, c)    
-        plt.plot(v_smooth,d,    
-#                 color = c,
-                 alpha = al,
-                 linewidth = lw,
-                 label = str(i))
-
-    if well_id == 300:
-        c = 'grey'
-        print(well_id, c)
-        plt.plot(v_smooth,d,                  
-                 color = c,
-                 alpha = al,
-                 linewidth = lw,
-                 label = str(i))   
+        if well_id == 300:
+            c = 'grey'
+            print(well_id, c)
+            plt.plot(v_smooth,d,                  
+                     color = c,
+                     alpha = al,
+                     linewidth = lw,
+                     label = str(i))   
+        
+        if well_id == 301:
+            c = 'navy'
+            print(well_id,c)
+            plt.plot(v_smooth,d,                 
+                     color = c,
+                     alpha = al,
+                     linewidth = lw,
+                     label = str(i))
+                    
+        if well_id == 306:
+            c = 'grey'
+            print(well_id,c)
+            plt.plot(v_smooth,d,                
+                     color = c,
+                     alpha = al,
+                     linewidth = lw,
+                     label = str(i))        
     
-    if well_id == 301:
-        c = 'navy'
-        print(well_id,c)
-        plt.plot(v_smooth,d,                 
-                 color = c,
-                 alpha = al,
-                 linewidth = lw,
-                 label = str(i))
-                
-    if well_id == 306:
-        c = 'grey'
-        print(well_id,c)
-        plt.plot(v_smooth,d,                
-                 color = c,
-                 alpha = al,
-                 linewidth = lw,
-                 label = str(i))        
-    
-
     
 #% Make long 1D arrays of all log values and depths            
 arr_depths = np.array([])
@@ -176,35 +186,31 @@ arr_vel = np.array([])
 arr_res = np.array([])
 arr_gam = np.array([])
 arr_den = np.array([])
+arr_sp = np.array([])
 for key in dic.keys():
     arr_depths = np.append(arr_depths, dic[key]['dep'])
     arr_vel = np.append(arr_vel, dic[key]['vel_smooth'])
     arr_res = np.append(arr_res, dic[key]['res_smooth'])
     arr_gam = np.append(arr_gam, dic[key]['gam_smooth'])
     arr_den = np.append(arr_den, dic[key]['den_smooth'])
+    arr_sp = np.append(arr_sp, dic[key]['sp_smooth'])
 
 arr_depths_unique = np.unique(arr_depths[arr_depths >= 100])            
 
-# stack velocities
+# stack data
 stacked_velocity = np.zeros_like(arr_depths_unique)
 stacked_resistivity = np.zeros_like(arr_depths_unique)
 stacked_gamma = np.zeros_like(arr_depths_unique)
-stacked_density = np.zeros_like(arr_depths_unique) 
+stacked_density = np.zeros_like(arr_depths_unique)
+stacked_sp = np.zeros_like(arr_depths_unique) 
 for i,x in enumerate(arr_depths_unique):
-    mask = (arr_depths == x)  
-    stacked_velocity[i] = np.nanmean(arr_vel[mask])
+    mask = (arr_depths == x)
     
-for i,x in enumerate(arr_depths_unique):
-    mask = (arr_depths == x)      
-    stacked_resistivity[i] = np.nanmean(arr_res[mask]) 
-    
-for i,x in enumerate(arr_depths_unique):
-    mask = (arr_depths == x)  
-    stacked_gamma[i] = np.nanmean(arr_gam[mask])
-    
-for i,x in enumerate(arr_depths_unique):
-    mask = (arr_depths == x)  
+    stacked_velocity[i] = np.nanmean(arr_vel[mask])         
+    stacked_resistivity[i] = np.nanmean(arr_res[mask])     
+    stacked_gamma[i] = np.nanmean(arr_gam[mask])    
     stacked_density[i] = np.nanmean(arr_den[mask])
+    stacked_sp[i] = np.nanmean(arr_sp[mask])
     
     
 # set velocities for unsampled shallow depths
@@ -217,50 +223,69 @@ my_v = np.linspace(v_min, v_max, len(my_depth))
 depths_to_surface = np.append(my_depth, arr_depths_unique)
 stacked_velocity_to_surface = np.append(my_v, stacked_velocity)
 
-plt.plot(stacked_velocity_to_surface,depths_to_surface,
-         'k',
-         label = 'Stacked Data')
-
-plt.legend()
-plt.ylabel('Depth [m]', fontsize = 18)
-plt.xlabel('Velocity [m/s]', fontsize = 18)
-plt.title('Wells Median Filtered\n Window Size = ' + str(window_size) + '\n Smoothed over ' + str(d_dist) + 'meters',
-          fontsize = 21)
+if make_plots == True:
+    plt.plot(stacked_velocity_to_surface,depths_to_surface,
+             'k',
+             label = 'Stacked Data')
     
-fig99.gca().invert_yaxis()  
+    plt.legend()
+    plt.ylabel('Depth [m]', fontsize = 18)
+    plt.xlabel('Velocity [m/s]', fontsize = 18)
+    plt.title('Wells Median Filtered\n Window Size = ' + str(window_size) + '\n Smoothed over ' + str(d_dist) + 'meters',
+              fontsize = 21)
+        
+    fig99.gca().invert_yaxis()  
 
 #%% make plot of all stacked values
-fig50 = plt.figure(50, figsize = (6,16))
-ylimits = [0,2500]
+fig50 = plt.figure(50, figsize = (8.5,11))
+ylimits = [0,3200]
 
-plt.subplot(221)
+plt.subplot(151)
 plt.plot(stacked_velocity, arr_depths_unique,
          label = 'Velocity')
-plt.legend()
+plt.title('Velocity')
+plt.xlabel('[m/s]')
+plt.ylabel('Depth [mbsf]')
 plt.ylim(ylimits)
 fig50.gca().invert_yaxis()
 
 
-plt.subplot(222)
+plt.subplot(152)
 plt.plot(stacked_resistivity, arr_depths_unique,
          label = 'Resistivity')
-plt.legend()
+plt.title('Resistivity')
+plt.xlabel('[ohms]')
+plt.yticks([])
 plt.ylim(ylimits)
 fig50.gca().invert_yaxis()
 
 
-plt.subplot(223)
+plt.subplot(153)
 plt.plot(stacked_gamma, arr_depths_unique,
          label = 'Gamma')
-plt.legend()
+
+plt.title('Gamma')
+plt.xlabel('[gapi]')
+plt.yticks([])
 plt.ylim(ylimits)
 fig50.gca().invert_yaxis()
 
 
-plt.subplot(224)
+plt.subplot(154)
 plt.plot(stacked_density, arr_depths_unique,
          label = 'Density')
-plt.legend()
+plt.title('Density')
+plt.xlabel('[g/cm^3]')
+plt.yticks([])
+plt.ylim(ylimits)
+fig50.gca().invert_yaxis()
+
+plt.subplot(155)
+plt.plot(stacked_sp, arr_depths_unique,
+         label = 'SP')
+plt.title('Spon. Pot.')
+plt.xlabel('[mV]')
+plt.yticks([])
 plt.ylim(ylimits)
 fig50.gca().invert_yaxis()
 
@@ -283,7 +308,3 @@ if write_2_file == True:
     # use pandas to write            
     depth_time = pd.DataFrame(data = data_arr) 
     depth_time.to_csv('/auto/home/talongi/Pvf/Data_tables/depth_time_mod.txt', sep = ' ', index = False)
-    
-        
-        
-   
