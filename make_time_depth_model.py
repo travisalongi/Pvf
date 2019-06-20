@@ -1,7 +1,8 @@
  # -*- coding: utf-8 -*-
 """
 read in las files -- develop time depth model
-this is spaghetti code
+this is spaghetti code -- better code well_deviation
+this does not take into account deviated wells
 author: talongi
 """
 
