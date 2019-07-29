@@ -10,8 +10,6 @@ import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.mlab as ml
 from scipy.interpolate import griddata, interp1d
 from scipy.spatial.distance import cdist
 from scipy.stats import binned_statistic
@@ -171,17 +169,18 @@ if calc_distances == True:
     print(time.time() - t0)
     np.savetxt('calc_dist_pts_to_fault.txt', dist_arr, delimiter = ' ')
 
-  
+# check that data is loaded  
 try:
     dist_arr
 except NameError:
-    dist_arr = pd.read_csv('calc_dist_pts_to_fault.txt', sep = '\s+')
+    dist_arr = pd.read_csv('calc_dist_pts_to_fault.txt', 
+                           header = None, sep = '\s+')
     dist_arr = dist_arr.values
     print('Data loaded from text file')
 else:
     print('Distance data array loaded')
       
- #%%  
+ #%% All data 
 plt.close('all')
 tfl_thresh = 0.85
 n_divisions = 9
@@ -251,8 +250,16 @@ if calc_distances == True:
     print(time.time() - t0)
     np.savetxt('calc_dist_east_of_fault.txt', dist_east, delimiter = ' ')
 
-#plt.close('all')
+try:
+    dist_east
+except NameError:
+    dist_east = pd.read_csv('calc_dist_east_of_fault.txt', sep = '\s+')
+    dist_east = dist_east.values
+    print('Data loaded from text file')
+else:
+    print('Distance data array loaded')
 
+plt.close('all')
 tfl_thresh= 0.70
 n_divisions = 1 # times to divide up data
 n_minimum = 10 # minimum number of traces containing tfl above threshold
@@ -333,7 +340,7 @@ if calc_distances == True:
 
 plt.close('all')
 tfl_thresh= 0.70
-n_divisions = 1 # times to divide up data
+n_divisions = 7 # times to divide up data
 n_minimum = 10 # minimum number of traces containing tfl above threshold
 min_depth = 200 #meters
 max_depth = 2200 #meters
@@ -386,237 +393,144 @@ top.set_ylabel('Fault Density -- N > %2.2f / N' % (tfl_thresh))
 bottom.set_xlabel('Distance from fault [m]')
 
 
-#%%
-#fig = plt.figure(4, figsize = (18,10) )
-#plt.plot(dist_arr[::500,2:300][mask],nn_arr[::500,2:300][mask],',', alpha = 0.3, color = 'black', markerfacecolor = 'gray')    
-
-fig86, axs = plt.subplots(3,1)
-# make arrays correct size
-nn_sliced = nn_arr[:,2:]
-nn_flat = nn_sliced.flatten()
-
-dist_sliced = dist_arr[:,2:]
-dist_flat = dist_sliced.flatten()
-
-#axs[0].hist(nn_flat, bins = 1000, alpha = 0.7)
-#axs[0].set_xlim(-0.5, 1.5)
-#axs[0].set_xlabel('Pr')
-#axs[0].set_ylabel('Counts')
-
-axs[0].plot(dist_flat[::50], nn_flat[::50],',', alpha = 0.02, color = 'darkred')
-axs[0].set_ylim(0,1.5)
-axs[0].set_xlabel('Distance from fault')
-axs[0].set_ylabel('Pr')
-
-axs[1].semilogx(dist_flat[::50], nn_flat[::50],',', alpha = 0.02, color = 'sienna')
-axs[1].set_ylim(0,1.5)
-#axs[1].set_xlabel(r'$\log(Distance from fault)$')
-axs[1].set_ylabel('Pr')
-
-axs[2].loglog(dist_flat[::50], nn_flat[::50],',', alpha = 0.02, color = 'goldenrod')
-axs[2].set_ylim(0,1.5)
-axs[2].set_xlabel(r'$\log(Distance)$')
-axs[2].set_ylabel(r'$\log(Pr)$')
-
-#%%
-prob_tol = 0.9
-prob_mask = nn_sliced >= prob_tol
- 
-plt.figure(20, figsize = (18,10))
-plt.hist(dist_sliced[prob_mask],bins = 1000)
-
-
-#%%
-
-""" 
-want to calculate the azimuths between points of the fault data
-"""
-az_e = []
-dip_e = []
-d_e = []
-for i in range(0,  east.shape[0] -1):
-    p1 = (east.x[i], east.y[i], east.z[i])
-    p2 = (east.x[i+1], east.y[i+1], east.z[i+1])
-    p3 = np.asarray(p2) - np.asarray(p1)
+#%%rotate data to fault strike
+def rotate_data(theta, data):
+    """ rotates points in xy plane counter-clock wise 
+    by angle theta (degrees)"""
+    #rotation matrix
+    theta = np.radians(theta)
+    c,s = np.cos(theta), np.sin(theta)
+    R = np.array(((c,-s), (s,c)))
     
+    #move data to origin
+    center_point = data[int(len(data)/2)]
+    data_origin = data - center_point
+    data_rotated = np.matmul(data_origin, R)
+    data_transformed = data_rotated + center_point
+    return data_transformed
 
-    dy = east.y[i] - east.y[i+1]
-    dx = east.x[i] - east.x[i+1]
-    dz = east.z[i] - east.z[i+1]
+def collapse_smooth_data(data, min_samp, max_samp, winsize):
+    """takes tfl data, slice by depth in samples
+    calculate averages in z-dir, then averages in the crsline dir
+    smooth the result and return"""
+    d_trim = data[:,min_samp:max_samp]    
+    z_mean = np.nanmean(d_trim, axis = 1)
+    z_shape = z_mean.reshape((172,730))
+    d_mean = np.nanmean(z_shape, axis = 0) 
+    df = pd.DataFrame(d_mean)
+    d_smooth = df.rolling(window = winsize, min_periods = int(winsize/4), win_type = None, center = True).mean()
+    return d_smooth
 
-    dip = (np.rad2deg(np.arctan(dz/dy)))
-    az = (np.rad2deg(np.arctan(dy/dx)))
-    d = np.linalg.norm(np.asarray(p1) - np.asarray(p2))
+def fracture_density_depth(data, threshold, winsize = 2, low_lim = [], high_lim =[]):
+    """takes data and calculates fracture density 
+    N above a threshold / N total in trace"""
+    shp = data.shape
+    densities = np.full(shp[1], np.nan)
+    for i in np.arange(shp[1]):
+        col = data[:,i]
+        col = np.where(np.isnan(col), -1, col) #replace nan with -1
+        trim_col = col.reshape(172,730)[low_lim:high_lim,:]
+        count_above_threshld = np.sum(trim_col > threshold)
 
-    dip_e.append(dip)
-    az_e.append(az)
-    d_e.append(d)
+        if count_above_threshld <= 0:
+            print('no values above threshold')
+        n_trimed = trim_col.size
+        fracture_density = count_above_threshld / n_trimed
+        densities[i] = fracture_density
+        # calculate mode
+        hist = np.histogram(fracture_density, bins = 'auto')
+        mode = hist[1][np.argmax(hist[0])]               
+    df = pd.DataFrame(densities)
+    d_smooth = df.rolling(window = winsize, center = True).mean()
+    return d_smooth.values, mode
 
+def plot_slice(data, xy_data, sample, threshold):
+    xy_coords = xy_data[:len(data),:]
+    z_slice = data[:,sample]
+    plt.scatter(xy_coords[:,0], xy_coords[:,1], s = [], c = z_slice, vmin = threshold) with 
 
-#%%
+xy_rot = rotate_data(10, xy_arr)
+
+# modify matrix dimensions
+dimensions = (730,172)
+new_len = 730*172
+tfl = tfl_arr[:,2:]
+tfl_new = tfl[:new_len,:]
+
 plt.close('all')
+n_divisions = 5 # times to divide up data
+min_depth = 200 #meters
+max_depth = 1800 #meters
+min_sample = f_d(min_depth) / 4 #convert to twt to sample
+max_sample = f_d(max_depth) / 4 
+sample_arr = np.linspace(min_sample, max_sample, n_divisions + 1)
 
-fig5 = plt.figure(5, figsize = (18,10)) 
-plt.scatter(east.x[:100], east.y[:100], s = 10*east.stick_ind[:100], 
-            c = east.stick_ind[:100], cmap = 'bwr',
-            alpha = 0.5)       
-plt.colorbar()
-plt.axis('equal')
+smoothing = 40
+xmax = 500
+fig = plt.figure(10, figsize = (8.5,11))
+for i,x in enumerate(sample_arr):
+    if i == n_divisions:
+        ax.set_ylim([0.04, 0.11])
+        ax.set_xlim([0, xmax])
 
-
-#%% looking at stick indexes
-fig8 = plt.figure(9, figsize = (18,10))
-for i in west.stick_ind.unique():
-     loop_mask_e = east.stick_ind == i
-     loop_mask_c = central.stick_ind == i
-     loop_mask_w = west.stick_ind == i
-     
-     plt.plot(east.x[loop_mask_e], east.y[loop_mask_e])
-     plt.plot(central.x[loop_mask_c], central.y[loop_mask_c])
-     plt.plot(west.x[loop_mask_w], west.y[loop_mask_w])    
-plt.axis('equal')     
-
-#%% Plotting NN data
-plt.close()
-# n-th layer
-sample_depth = 150
-
-figgy = plt.figure(3, figsize = (18,10))
-scatter = plt.scatter(dist_arr[:,0], dist_arr[:,1], 
-            s = None, 
-            c = dist_arr[:,sample_depth], 
-            cmap = 'YlGnBu',
-            alpha = 0.9)
-
-prob_tol = 0.98
-nn_z = nn_sliced[:,sample_depth]
-prob_mask = nn_z >= prob_tol
-nn_x = nn_arr[:,0]
-nn_y = nn_arr[:,1]
-
-plot = plt.plot(nn_x[prob_mask], nn_y[prob_mask], 'r.', markersize = 1.5, alpha = 0.5)
-plt.plot(east.x,east.y,'b:', markersize = 1)
-plt.plot(central.x,central.y,'b:', markersize = 1)
-plt.plot(west.x,west.y,'b:', markersize = 1)
-
-plt.ylim( 3710500,3717500)
-plt.colorbar()
-
-#%%
-plt.figure(21, figsize = (18,10))
-plt.loglog(dist_flat[::20], nn_flat[::20],
-           '.',markersize = 1.5,
-           alpha = 0.1, 
-           color = 'goldenrod')
-plt.xlim(10,5e3)
-plt.ylim(1e-3,2)
-#plt.axis('equal')
-plt.xlabel('log(Distance From Fault)')
-plt.ylabel('log(Probability')
-
-#%%
-
-bin_size = 50
-bins_arr = np.arange(10,5000, bin_size) #50 km bins
-n_in_bin = np.zeros_like(bins_arr)
-mean_prob = []
-mid_dist = []
-
-cum_sum = 0
-count = 0
-for i in range(len(bins_arr)-1):
-    dist_min = dist_sliced >= bins_arr[i]
-    dist_max = dist_sliced < bins_arr[i + 1]
-
-    dist_mask = np.logical_and(dist_min, dist_max)
-       
-    n_in_bin[count] = dist_mask.sum()
-    mean_val = np.nanmean(nn_sliced[dist_mask])
-    mid_val = (bins_arr[i] + bins_arr[ i + 1])/2
-
-    mean_prob.append(mean_val)
-    mid_dist.append(mid_val)
+    else:
+        ax = plt.subplot(n_divisions,1,i+1)
+        ax.plot(collapse_smooth_data(tfl_new, int(sample_arr[i]), int(sample_arr[i+1]), smoothing))
+        ax.set_ylim([0.04, 0.11])
+        ax.set_xlim([0, 450])
     
-    cum_sum += np.sum(dist_mask)
-    count += 1
-    
-print(cum_sum)
-#%%
-fs = 18
-pf_mask = np.logical_and(np.asarray(mid_dist) > 1e2, np.asarray(mid_dist) < 3e3)
-pf = np.polyfit(mid_dist, mean_prob,2)# m = pf[0], b = pf[1]
-f = np.poly1d(pf)
-
-x = np.linspace(min(mid_dist),max(mid_dist), len(mid_dist))
-y = f(x)
-
-
-
-plt.figure(22, figsize = (18,10))
-plt.plot(mid_dist, mean_prob, ':', color = 'indigo')
-plt.scatter(mid_dist, mean_prob, s = (n_in_bin[:-1])**(0.29))
-plt.plot(x,y)
-
-plt.figure(23, figsize = (18,10))
-ax = plt.gca()
-
-ax.plot(mid_dist, mean_prob, ':', color = 'teal')
-ax.scatter(mid_dist, mean_prob, 
-           s = (n_in_bin[:-1])**(0.25),
-           color = 'lightblue',
-           edgecolor = 'navy')
-#y = x**pf[0] + 10**pf[1]
-#ax.plot(x,y)
-
-
-ax.set_xscale('log')
-ax.set_xlabel(r'$log(Dist)$', fontsize = fs)
-
-ax.set_yscale('log')
-ax.set_ylabel(r'$log(Pr)$', fontsize = fs)
-
-#%% old way of calc distances brut force
-"""
-# set threshold for calculation
-threshold = 0.3
-
-start_time = time.time()
-d_min = np.full_like(tfl_arr[:,2:], np.nan, dtype = np.double) # no coordinates array of nan
-d_min = []
-tfl = []
-for i in i_th[::25]:
-    # set xy coord
-    xy = tfl_0[i,:2]
-    
-    for j in j_th[::5]:
-        # set values        
-        z = sample_times[j] #z depth in time
-        tfl_point = np.append(xy,z) 
-        
-        # tfl probability
-        tfl_value = tfl_arr[i,j+2]
-        
-        if tfl_value > threshold:
-#            print(i,j, tfl_value)
-                       
-            # calculate distances to each strand
-            dist_e = np.linalg.norm(tfl_point - e_fault_points, axis = 1)
-            dist_c = np.linalg.norm(tfl_point - c_fault_points, axis = 1)
-            dist_w = np.linalg.norm(tfl_point - w_fault_points, axis = 1)
-        
-            # determine min dist
-            minimum_distances = ([dist_w.min(), dist_c.min(), dist_e.min()])
-            
-            # only want points on the outside of the fault
-            if min(minimum_distances) == dist_c.min():
-                continue
-            if (dist_e.min() < dist_c.min() < dist_w.min()) or (dist_e.min() > dist_c.min() > dist_w.min()):
-                d_min.append(min(minimum_distances))
-                tfl.append(tfl_value)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        ax.set_xticks([])
+ax.spines['bottom'].set_visible(True)
+#ax.set_xticks(np.arange(0,xmax,50))
                 
-#            save min value in matrix in same order as orig nn_arr
-#            d_min[i,j] = min((d_e_min, d_c_min, d_w_min))
-                
-end_time = time.time() - start_time
-print(end_time)
-"""
+#%% single plot
+n_divisions = 7 # times to divide up data
+min_depth = 300 #meters
+max_depth = 2000 #meters
+min_sample = f_d(min_depth) / 4 #convert to twt to sample
+max_sample = f_d(max_depth) / 4 
+sample_arr = np.linspace(min_sample, max_sample, n_divisions + 1)
+cmap = plt.cm.Spectral(np.linspace(0.05,0.95,n_divisions))
+plt.close('all')
+smoothing = 80
+fig = plt.figure(10, figsize = (8.5,11))
+for i,x in enumerate(sample_arr):
+    if i == n_divisions:
+        print('skip')
+    else:
+        plt.plot(np.arange(730) * 13.1, 
+                 collapse_smooth_data(tfl_new, int(sample_arr[i]), int(sample_arr[i+1]), smoothing), 
+                 color = cmap[i],
+                 label = ('Depth = %d - %d [m]' % (z_arr[int(sample_arr[i])], z_arr[int(sample_arr[i+1])] )))
+plt.xlabel('Distance in Vol. West to East (p[, which  [m]')
+plt.ylabel('Mean Fracture Density')
+plt.legend(frameon = False, fontsize = 8)
+
+#%% calc fracture density(depth)
+plt.close('all')
+smoothing = 5
+thresholds = np.arange(0.45, 0.96, 0.1)
+cmap = plt.cm.cividis(np.linspace(0,1,len(thresholds)))
+plt.figure(11, figsize = (8.5,11))
+for i, thresh in enumerate(thresholds):
+    plt.loglog(z_arr, 
+             fracture_density_depth(tfl_new,thresh, smoothing, low_lim = 60, high_lim = 420)[0],
+             '-',
+             c = cmap[i],
+             label = 'TFL > %2.2f' % thresh)
+plt.xlabel('Depth Below Seafloor [m]')
+plt.ylabel('Fracture Density')
+plt.legend(frameon = False, fontsize = 8)
+plt.xlim([300,2600])
+
+#%% make some plots of tfl along various z-slices
+plt.close('all')
+sampling = np.arange(150,500,80)
+for i in sampling:
+    plt.figure()
+    plot_slice(tfl_new, xy_arr, i, 0.1)
+    plt.title('Depth = ' + str(int(z_arr[i])))
+
