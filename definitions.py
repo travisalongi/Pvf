@@ -5,12 +5,25 @@ Created on Tue Jul 30 14:14:19 2019
 @author: USGS Kluesner
 """
 import os
+import time
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d, griddata
-import time
 from sklearn.neighbors import NearestNeighbors
+
+def bootstrap(array, iterations):
+    boot_arr = np.zeros((iterations, len(array)))
+    for i in range(iterations):
+#        print(i)
+        random_index = np.random.randint(0, 
+                                        high = array.shape[0], 
+                                        size = array.shape)
+#        print(random_index)
+        random_arr = array[random_index]
+        boot_arr[i,:] = random_arr #each row is a single iterations
+    return boot_arr
+
 
 def rotate_data(theta, data):
     """ rotates points in xy plane counter-clock wise 
@@ -30,7 +43,7 @@ def rotate_data(theta, data):
 def collapse_smooth_data(data, min_samp, max_samp, winsize):
     """takes tfl data, slice by depth in samples
     calculate averages in z-dir, then averages in the crsline dir
-    smooth the result and return"""
+    smooth the result and return -- !!only works for shell data!!"""
     d_trim = data[:,min_samp:max_samp]    
     z_mean = np.nanmean(d_trim, axis = 1)
     z_shape = z_mean.reshape((172,730))
@@ -39,10 +52,11 @@ def collapse_smooth_data(data, min_samp, max_samp, winsize):
     d_smooth = df.rolling(window = winsize, min_periods = int(winsize/4), win_type = None, center = True).mean()
     return d_smooth
 
-def fracture_density_depth(data, threshold,  winsize = 2, combine_z_slices = 1, depth_arr = [], low_lim = [], high_lim =[],
+def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_lim = [], high_lim =[],
                            min_depth = [], max_depth = [], ):
-    """takes data and calculates fracture density & background (mode)
-    N above a threshold / N total in trace
+    """takes data and calculates fracture density
+    N above a threshold / N total in z-slice
+    winsize is the range which the data will be smoothed
     depths entered in meters"""
     shp = data.shape
     densities = np.full(shp[1], np.nan)
@@ -57,18 +71,20 @@ def fracture_density_depth(data, threshold,  winsize = 2, combine_z_slices = 1, 
     for i in np.arange(min_ind, max_ind, 1):
         col = data[:,i]
         col = np.where(np.isnan(col), -1, col) #replace nan with -1
-        trim_col = col.reshape(172,730)[low_lim:high_lim,:]
-        count_above_threshld = np.sum(trim_col > threshold)
+        
+        if len(low_lim) > 0 or len(high_lim) > 0:
+            trim_col = col.reshape(172,730)[low_lim:high_lim,:]
+            count_above_threshld = np.sum(trim_col > threshold)
+            n_trimed = trim_col.size
+        else:
+            count_above_threshld = np.sum(col > threshold)
+            n_trimed = col.size
 
         if count_above_threshld <= 0:
-            print('no values above threshold')
-        n_trimed = trim_col.size
-        fracture_density = count_above_threshld / n_trimed
-        densities[i] = fracture_density
+            print(i, ' no values above threshold')
         
-    # calculate mode
-    hist = np.histogram(densities[~np.isnan(densities)], bins = 'auto')
-    mode = hist[1][np.argmax(hist[0])] #background fracture density  
+        fracture_density = count_above_threshld / n_trimed
+        densities[i] = fracture_density         
 
     df = pd.DataFrame(densities)
     d_smooth = df.rolling(window = winsize, center = True).mean()
@@ -76,8 +92,10 @@ def fracture_density_depth(data, threshold,  winsize = 2, combine_z_slices = 1, 
     
     # fit data    
     Z = depth_arr[min_ind:max_ind]
+    Z = Z.reshape(len(Z),1)
     D = d_smooth[min_ind:max_ind]
     nans = np.isnan(D) #boolean to remove nans from calculation
+    print(nans.shape, Z.shape, D.shape, np.sum(~nans), type(nans))
     Z = Z[~nans]
     D = D[~nans]
 
@@ -86,27 +104,27 @@ def fracture_density_depth(data, threshold,  winsize = 2, combine_z_slices = 1, 
     inter = pf[1]
     D_fit =  Z**slope * 10**inter
     
-    return Z, D, D_fit, mode, slope
+    return Z, D, D_fit, slope
     
-def background_density(data, min_depth, max_depth, threshold = 0):
-    """ calculate background fracture density of subvolume using
-    histogram binning to find the mode
-    >> Not doing what I want"""
-    min_ind = depth2sample(min_depth)
-    max_ind = depth2sample(max_depth)
-    d = data[:,min_ind:max_ind]
-    d = d.flatten()
-    d = d[~np.isnan(d)]
-    d = d[d != 0]
-    N = d.size
-    print(N)
-    median = np.median(d)
-    hist = np.histogram(d, bins = 'auto')
-    mode = hist[1][np.argmax(hist[0])]
-    bin_edges = hist[1][1:]
-    counts = hist[0]
-    bg_density = np.sum(d > median) / N
-    return median, bg_density, bin_edges, counts
+#def background_density(data, min_depth, max_depth, threshold = 0):
+#    """ calculate background fracture density of subvolume using
+#    histogram binning to find the mode
+#    >> Not doing what I want !! Do not USE"""
+#    min_ind = depth2sample(min_depth)
+#    max_ind = depth2sample(max_depth)
+#    d = data[:,min_ind:max_ind]
+#    d = d.flatten()
+#    d = d[~np.isnan(d)]
+#    d = d[d != 0]
+#    N = d.size
+#    print(N)
+#    median = np.median(d)
+#    hist = np.histogram(d, bins = 'auto')
+#    mode = hist[1][np.argmax(hist[0])]
+#    bin_edges = hist[1][1:]
+#    counts = hist[0]
+#    bg_density = np.sum(d > median) / N
+#    return median, bg_density, bin_edges, counts
 
 def plot_slice(data, xy_data, sample, threshold):
     xy_coords = xy_data[:len(data),:]
@@ -180,30 +198,37 @@ def load_odt_fault(textfile, n_grid_points = 1000, int_type = 'linear'):
     Z = griddata((data.x, data.y), data.z, (X, Y), method = int_type)
     return X, Y, Z, data
 
-def calc_min_dist(data_arr, data_xy, fault_coords, algorithm = 'ball_tree'):
+def calc_min_dist(data_arr, data_xy, fault_points, algorithm = 'ball_tree'):
     """calculate min distance from point in volume to point along interpolated fault
     min. dist. calc w/ knn
     data MxN
-    data_xy Mx2
-    data_z Nx1
-    fault cords Px3
+    data_xy Mx2 - xy coordinates of data points 
+    fault cords Px3 - in xyz format
     """
     t0 = time.time()
     dist_arr = np.full_like(data_arr, np.nan) # arr to fill
     z_arr = np.arange(data_arr.shape[1])
-    z_arr = sample2depth( z_arr.reshape(len(z_arr),1))
-    fault_points = fault_coords
+    z_arr = sample2depth( z_arr.reshape(len(z_arr),1)) # other function that converts sample to depth w/ vel. model.
     fault_points = fault_points[~np.isnan(fault_points).any(axis = 1)] # filter out rows with nan in z
     n_z = len(z_arr)
       
     model = NearestNeighbors(n_neighbors = 1, algorithm = algorithm).fit(fault_points)   
+    
     # calculate distances knn method
     for i, xy in enumerate(data_xy):
-        xyz_tile = np.concatenate((np.tile(xy, (n_z,1)), z_arr),1) # make xyz array
+        xyz_tile = np.concatenate((np.tile(xy, (n_z,1)), z_arr),1) # make xyz array of data points
         d_min_dist = model.kneighbors(xyz_tile)[0].min(axis = 1)
         dist_arr[i,:] = d_min_dist      
     print(time.time() - t0)    
     return dist_arr
     
+def trim_tfl_distance(data, distance_data, min_dist = 0, max_dist= 6000, replace_with = np.nan):
+    """ takes attribute data, calculated min distances, and masks off data 
+    larger than the max_distance, and returns a new attribute array in same shape
+    with nans in place of data beyond max distance"""
+    mask = np.logical_and(distance_data < max_dist, distance_data > min_dist)
+    tfl_trimmed = np.where(mask, data, replace_with)  
+    return tfl_trimmed
+
     
     
