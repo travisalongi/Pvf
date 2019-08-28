@@ -11,19 +11,32 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d, griddata
 from sklearn.neighbors import NearestNeighbors
+import multiprocessing as mp
 
 def bootstrap(array, iterations):
-    boot_arr = np.zeros((iterations, len(array)))
-    for i in range(iterations):
-#        print(i)
+    """takes a 1d array as input, bootstraps the array (randomly sample array
+    with replacement) and returns a randomly sampled array, where each row is 
+    an iterations """
+    boot_arr = np.zeros((iterations, array.size))
+    for i in np.arange(iterations):
+#    for i in boot_arr:
         random_index = np.random.randint(0, 
-                                        high = array.shape[0], 
-                                        size = array.shape)
-#        print(random_index)
-        random_arr = array[random_index]
-        boot_arr[i,:] = random_arr #each row is a single iterations
+                                        high = array.size, 
+                                        size = array.size)
+        
+        boot_arr[i,:] = array.flatten()[random_index] #each row is a single iterations
     return boot_arr
 
+def bootstrap_parallel(array):
+    """takes a 1d array as input, bootstraps the array (randomly sample array
+    with replacement) and returns a randomly sampled array, this actually runs
+    slower than the above bootstrapping method"""
+
+    random_index = np.random.randint(0, 
+                                        high = array.shape[0], 
+                                        size = array.shape[0])
+    boot_arr = array[random_index]
+    return boot_arr
 
 def rotate_data(theta, data):
     """ rotates points in xy plane counter-clock wise 
@@ -53,11 +66,14 @@ def collapse_smooth_data(data, min_samp, max_samp, winsize):
     return d_smooth
 
 def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_lim = [], high_lim =[],
-                           min_depth = [], max_depth = [], ):
+                           min_depth = [], max_depth = [], 
+                           bootstrap_iterations = None,
+                           apply_bool_data = []):
     """takes data and calculates fracture density
     N above a threshold / N total in z-slice
     winsize is the range which the data will be smoothed
-    depths entered in meters"""
+    depths entered in meters
+    bootstrap iterations (integer)"""
     shp = data.shape
     densities = np.full(shp[1], np.nan)
     
@@ -67,24 +83,38 @@ def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_li
     min_ind = depth2sample(min_depth)
     max_ind = depth2sample(max_depth)  
         
-    # calc fracture density for each sample in range
+    # calc fracture density for each depth sample in range
     for i in np.arange(min_ind, max_ind, 1):
-        col = data[:,i]
-        col = np.where(np.isnan(col), -1, col) #replace nan with -1
+        if type(apply_bool_data) == list:                  
+            col = data[:,i]
+            n_total = col.size
+            col = col[~np.isnan(col)]
+        else:
+            boolean = apply_bool_data
+            col = data[:,i][boolean[:,i]]
+            n_total = col.size
+            col = col[~np.isnan(col)]
         
         if len(low_lim) > 0 or len(high_lim) > 0:
             trim_col = col.reshape(172,730)[low_lim:high_lim,:]
             count_above_threshld = np.sum(trim_col > threshold)
-            n_trimed = trim_col.size
+            n_total = trim_col.size
+        
+        if bootstrap_iterations != None:            
+            bs_col = bootstrap(col.flatten(), bootstrap_iterations)
+            
+            count_above_threshld = np.sum(bs_col > threshold)
+            
+            fracture_density = count_above_threshld / n_total
+            densities[i] = fracture_density                        
         else:
             count_above_threshld = np.sum(col > threshold)
-            n_trimed = col.size
+            
+            fracture_density = count_above_threshld / n_total
+            densities[i] = fracture_density
 
         if count_above_threshld <= 0:
             print(i, ' no values above threshold')
-        
-        fracture_density = count_above_threshld / n_trimed
-        densities[i] = fracture_density         
 
     df = pd.DataFrame(densities)
     d_smooth = df.rolling(window = winsize, center = True).mean()
@@ -94,8 +124,9 @@ def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_li
     Z = depth_arr[min_ind:max_ind]
     Z = Z.reshape(len(Z),1)
     D = d_smooth[min_ind:max_ind]
-    nans = np.isnan(D) #boolean to remove nans from calculation
     print(nans.shape, Z.shape, D.shape, np.sum(~nans), type(nans))
+    nans = np.isnan(D) #boolean to remove nans from calculation
+    
     Z = Z[~nans]
     D = D[~nans]
 
@@ -200,13 +231,16 @@ def load_odt_fault(textfile, n_grid_points = 1000, int_type = 'linear'):
 
 def calc_min_dist(data_arr, data_xy, fault_points, algorithm = 'ball_tree'):
     """calculate min distance from point in volume to point along interpolated fault
-    min. dist. calc w/ knn
+    min. dist. calculated w/ knn
     data MxN
     data_xy Mx2 - xy coordinates of data points 
     fault cords Px3 - in xyz format
+    returns minimum distances and easting distance from fault
     """
     t0 = time.time()
     dist_arr = np.full_like(data_arr, np.nan) # arr to fill
+    east_arr = np.full_like(dist_arr, np.nan) # measure easting of fault
+    
     z_arr = np.arange(data_arr.shape[1])
     z_arr = sample2depth( z_arr.reshape(len(z_arr),1)) # other function that converts sample to depth w/ vel. model.
     fault_points = fault_points[~np.isnan(fault_points).any(axis = 1)] # filter out rows with nan in z
@@ -217,10 +251,15 @@ def calc_min_dist(data_arr, data_xy, fault_points, algorithm = 'ball_tree'):
     # calculate distances knn method
     for i, xy in enumerate(data_xy):
         xyz_tile = np.concatenate((np.tile(xy, (n_z,1)), z_arr),1) # make xyz array of data points
-        d_min_dist = model.kneighbors(xyz_tile)[0].min(axis = 1)
-        dist_arr[i,:] = d_min_dist      
+        distances, indicies = model.kneighbors(xyz_tile)
+        d_min_dist = distances.min(axis = 1)
+        fault_points_min_dist = fault_points[indicies].reshape(987,3)
+        difference = xyz_tile[:] - fault_points_min_dist[:]
+        
+        dist_arr[i,:] = d_min_dist
+        east_arr[i,:] = difference[:,0] #x coords are east/west
     print(time.time() - t0)    
-    return dist_arr
+    return dist_arr, east_arr
     
 def trim_tfl_distance(data, distance_data, min_dist = 0, max_dist= 6000, replace_with = np.nan):
     """ takes attribute data, calculated min distances, and masks off data 
