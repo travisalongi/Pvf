@@ -13,30 +13,40 @@ from scipy.interpolate import interp1d, griddata
 from sklearn.neighbors import NearestNeighbors
 import multiprocessing as mp
 
-def bootstrap(array, iterations):
+def bootstrap(array, iterations, array2 = []):
     """takes a 1d array as input, bootstraps the array (randomly sample array
     with replacement) and returns a randomly sampled array, where each row is 
     an iterations """
-    boot_arr = np.zeros((iterations, array.size))
-    for i in np.arange(iterations):
-#    for i in boot_arr:
-        random_index = np.random.randint(0, 
-                                        high = array.size, 
-                                        size = array.size)
+    array = array.flatten()
+
+    if type(array2) == list:
+        boot_arr = np.zeros((iterations, array.size))
+
+        for i in np.arange(iterations):
+    #    for i in boot_arr:
+            random_index = np.random.randint(0, 
+                                            high = array.size, 
+                                            size = array.size)
+            
+            boot_arr[i,:] = array.flatten()[random_index] #each row is a single iterations
+        return boot_arr
+    elif len(array) == len(array2):
+        boot_arr = np.zeros((iterations, array.size))
+        boot_arr2 = np.zeros_like(boot_arr)
+        for i in np.arange(iterations):
+    #    for i in boot_arr:
+            random_index = np.random.randint(0, 
+                                            high = array.size, 
+                                            size = array.size)
+            
+            boot_arr[i,:] = array.flatten()[random_index] #each row is a single iterations
+            boot_arr2[i,:] = array2.flatten()[random_index]
+        return boot_arr, boot_arr2
+    else:
+        print('two arrays with different lengths entered')
         
-        boot_arr[i,:] = array.flatten()[random_index] #each row is a single iterations
-    return boot_arr
+        
 
-def bootstrap_parallel(array):
-    """takes a 1d array as input, bootstraps the array (randomly sample array
-    with replacement) and returns a randomly sampled array, this actually runs
-    slower than the above bootstrapping method"""
-
-    random_index = np.random.randint(0, 
-                                        high = array.shape[0], 
-                                        size = array.shape[0])
-    boot_arr = array[random_index]
-    return boot_arr
 
 def rotate_data(theta, data):
     """ rotates points in xy plane counter-clock wise 
@@ -67,6 +77,7 @@ def collapse_smooth_data(data, min_samp, max_samp, winsize):
 
 def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_lim = [], high_lim =[],
                            min_depth = [], max_depth = [], 
+                           fit_data = False,
                            bootstrap_iterations = None,
                            apply_bool_data = []):
     """takes data and calculates fracture density
@@ -86,14 +97,15 @@ def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_li
     # calc fracture density for each depth sample in range
     for i in np.arange(min_ind, max_ind, 1):
         if type(apply_bool_data) == list:                  
-            col = data[:,i]
-            n_total = col.size
+            col = data[:,i]            
             col = col[~np.isnan(col)]
+            n_total = col.size
+            
         else:
             boolean = apply_bool_data
-            col = data[:,i][boolean[:,i]]
-            n_total = col.size
+            col = data[:,i][boolean[:,i]]            
             col = col[~np.isnan(col)]
+            n_total = col.size
         
         if len(low_lim) > 0 or len(high_lim) > 0:
             trim_col = col.reshape(172,730)[low_lim:high_lim,:]
@@ -101,41 +113,46 @@ def fracture_density_depth(data, threshold,  winsize = 2, depth_arr = [], low_li
             n_total = trim_col.size
         
         if bootstrap_iterations != None:            
-            bs_col = bootstrap(col.flatten(), bootstrap_iterations)
-            
+            bs_col = bootstrap(col.flatten(), bootstrap_iterations)            
             count_above_threshld = np.sum(bs_col > threshold)
             
             fracture_density = count_above_threshld / n_total
             densities[i] = fracture_density                        
         else:
-            count_above_threshld = np.sum(col > threshold)
-            
+            count_above_threshld = np.sum(col > threshold)            
             fracture_density = count_above_threshld / n_total
             densities[i] = fracture_density
 
         if count_above_threshld <= 0:
             print(i, ' no values above threshold')
-
+    print('N > threshold = %i --- N total = %i' % (count_above_threshld, n_total))
     df = pd.DataFrame(densities)
     d_smooth = df.rolling(window = winsize, center = True).mean()
     d_smooth = d_smooth.values
+    D = d_smooth[min_ind:max_ind]
     
-    # fit data    
     Z = depth_arr[min_ind:max_ind]
     Z = Z.reshape(len(Z),1)
-    D = d_smooth[min_ind:max_ind]
-    print(nans.shape, Z.shape, D.shape, np.sum(~nans), type(nans))
-    nans = np.isnan(D) #boolean to remove nans from calculation
     
-    Z = Z[~nans]
-    D = D[~nans]
-
-    pf = np.polyfit(np.log10(Z.flatten()),np.log10(D.flatten()),1)
-    slope = pf[0]
-    inter = pf[1]
-    D_fit =  Z**slope * 10**inter
+    if fit_data == True:
+        # fit data    
+        
+        D = d_smooth[min_ind:max_ind]
+        
+        nans = np.isnan(D) #boolean to remove nans from calculation
+        print(nans.shape, Z.shape, D.shape, np.sum(~nans), type(nans))
+        Z = Z[~nans]
+        D = D[~nans]
     
-    return Z, D, D_fit, slope
+        pf = np.polyfit(np.log10(Z.flatten()),np.log10(D.flatten()),1)
+        slope = pf[0]
+        inter = pf[1]
+        D_fit =  Z**slope * 10**inter
+        
+        return Z, D, D_fit, slope
+    
+    else:
+        return D, Z
     
 #def background_density(data, min_depth, max_depth, threshold = 0):
 #    """ calculate background fracture density of subvolume using
@@ -269,5 +286,23 @@ def trim_tfl_distance(data, distance_data, min_dist = 0, max_dist= 6000, replace
     tfl_trimmed = np.where(mask, data, replace_with)  
     return tfl_trimmed
 
+def semilogx_fit(x,y,deg=1):
+    """ produces y fit vector for semilogx graph & returns slope"""
+    fit_dist = x
+    pf = np.polyfit(np.log10(x.flatten()), (y), deg)
+    slope = pf[0]
+    inter = pf[1]
+    fit =  np.log10(fit_dist**(slope)) + inter
+    return x, fit
+
+def semilogy_fit(x,y,deg=1):
+    fit_dist = x
+    pf, cov = np.polyfit((x.flatten()), np.log10(y), 1, cov = True)
+    slope = pf[0]
+    inter = pf[1]
+    slope_std_dev = np.sqrt(cov[0,0])
+    fit = 10 ** (slope * fit_dist + inter)
+    return x, fit, slope, slope_std_dev
+    
     
     
